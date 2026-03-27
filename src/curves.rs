@@ -28,7 +28,7 @@ use crate::arithmetic::{Coordinates, CurveAffine, CurveExt};
 
 macro_rules! new_curve_impl {
     (($($privacy:tt)*), $name:ident, $name_affine:ident, $iso:ident, $base:ident, $scalar:ident,
-     $curve_id:literal, $a_raw:expr, $b_raw:expr, $curve_type:ident) => {
+     $curve_id:literal, $a_raw:expr, $b_raw:expr, $curve_type:ident $(, glv($glv_params:expr))?) => {
         /// Represents a point in the projective coordinate space.
         #[derive(Copy, Clone, Debug)]
         #[cfg_attr(feature = "repr-c", repr(C))]
@@ -466,21 +466,15 @@ macro_rules! new_curve_impl {
             type Output = $name;
 
             fn mul(self, other: &'b $scalar) -> Self::Output {
-                // TODO: make this faster
+                $name::scalar_mul(self, other)
+            }
+        }
 
+        impl $name {
+            #[allow(dead_code)]
+            fn double_and_add(point: &Self, scalar: &$scalar) -> Self {
                 let mut acc = $name::identity();
-
-                // This is a simple double-and-add implementation of point
-                // multiplication, moving from most significant to least
-                // significant bit of the scalar.
-                //
-                // We don't use `PrimeFieldBits::.to_le_bits` here, because that would
-                // force users of this crate to depend on `bitvec` where they otherwise
-                // might not need to.
-                //
-                // NOTE: We skip the leading bit because it's always unset (we are turning
-                // the 32-byte repr into 256 bits, and $scalar::NUM_BITS = 255).
-                for bit in other
+                for bit in scalar
                     .to_repr()
                     .iter()
                     .rev()
@@ -488,11 +482,12 @@ macro_rules! new_curve_impl {
                     .skip(1)
                 {
                     acc = acc.double();
-                    acc = $name::conditional_select(&acc, &(acc + self), bit);
+                    acc = $name::conditional_select(&acc, &(acc + point), bit);
                 }
-
                 acc
             }
+
+            impl_scalar_mul_dispatch!($name, $base, $scalar $(, glv($glv_params))?);
         }
 
         impl<'a> Neg for &'a $name_affine {
@@ -581,32 +576,7 @@ macro_rules! new_curve_impl {
             type Output = $name;
 
             fn mul(self, other: &'b $scalar) -> Self::Output {
-                // TODO: make this faster
-
-                let mut acc = $name::identity();
-
-                // This is a simple double-and-add implementation of point
-                // multiplication, moving from most significant to least
-                // significant bit of the scalar.
-                //
-                // We don't use `PrimeFieldBits::.to_le_bits` here, because that would
-                // force users of this crate to depend on `bitvec` where they otherwise
-                // might not need to.
-                //
-                // NOTE: We skip the leading bit because it's always unset (we are turning
-                // the 32-byte repr into 256 bits, and $scalar::NUM_BITS = 255).
-                for bit in other
-                    .to_repr()
-                    .iter()
-                    .rev()
-                    .flat_map(|byte| (0..8).rev().map(move |i| Choice::from((byte >> i) & 1u8)))
-                    .skip(1)
-                {
-                    acc = acc.double();
-                    acc = $name::conditional_select(&acc, &(acc + self), bit);
-                }
-
-                acc
+                $name::scalar_mul(&self.to_curve(), other)
             }
         }
 
@@ -955,7 +925,8 @@ new_curve_impl!(
     "pallas",
     [0, 0, 0, 0],
     [5, 0, 0, 0],
-    special_a0_b5
+    special_a0_b5,
+    glv(crate::glv::PALLAS_GLV)
 );
 new_curve_impl!(
     (pub),
@@ -967,7 +938,8 @@ new_curve_impl!(
     "vesta",
     [0, 0, 0, 0],
     [5, 0, 0, 0],
-    special_a0_b5
+    special_a0_b5,
+    glv(crate::glv::VESTA_GLV)
 );
 new_curve_impl!(
     (pub(crate)),
