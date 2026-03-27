@@ -9,7 +9,7 @@
 //! for constant-time operation.
 
 use crate::arithmetic::{adc, mac};
-use subtle::{Choice, ConditionallySelectable};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 /// GLV constants for a specific curve.
 ///
@@ -150,11 +150,11 @@ where
     let k1_raw = scalar_to_raw(&k1);
     let k2_raw = scalar_to_raw(&k2);
 
-    // If a scalar is > n/2, it represents a negative number: negate both scalar and point.
-    // n/2 is approximately 0x20000000... (top bit of the 255-bit field is at position 254).
-    // A value > n/2 has bit 254 or higher set.
-    let k1_neg = Choice::from((k1_raw[3] >> 62) as u8 & 1);
-    let k2_neg = Choice::from((k2_raw[3] >> 62) as u8 & 1);
+    // Determine sign: positive decomposition values are < 2^130 (limb[3] == 0),
+    // while negative values are represented as n - |val| ≈ 2^254 (limb[3] != 0).
+    // Use constant-time comparison.
+    let k1_neg = !k1_raw[3].ct_eq(&0);
+    let k2_neg = !k2_raw[3].ct_eq(&0);
 
     let k1_final = {
         let neg_k1 = scalar_neg(&k1);
@@ -188,14 +188,8 @@ where
     // Identity element
     let identity = p1 + &(-p1);
 
-    // Find highest bit across both half-size scalars
-    let num_bits = highest_bit_4(&k1_final, &k2_final);
-
-    if num_bits == 0 {
-        return identity;
-    }
-
-    // Shamir's trick: process bits from MSB to LSB
+    // Constant-time Shamir's trick: always iterate GLV_SCALAR_BITS bits
+    // to avoid leaking scalar magnitude through timing.
     let k1_bit = |i: usize| -> Choice {
         Choice::from(((k1_final[i / 64] >> (i % 64)) & 1) as u8)
     };
@@ -204,14 +198,14 @@ where
     };
 
     // Initialize with top bit
-    let b1 = k1_bit(num_bits - 1);
-    let b2 = k2_bit(num_bits - 1);
+    let b1 = k1_bit(GLV_SCALAR_BITS - 1);
+    let b2 = k2_bit(GLV_SCALAR_BITS - 1);
     let s01 = P::conditional_select(&identity, &p1, b1);
     let s23 = P::conditional_select(&p2, &p12, b1);
     let mut acc = P::conditional_select(&s01, &s23, b2);
 
-    // Process remaining bits
-    for i in (0..num_bits - 1).rev() {
+    // Process remaining bits (fixed count, no data-dependent branching)
+    for i in (0..GLV_SCALAR_BITS - 1).rev() {
         acc = acc + &acc; // double
 
         let b1 = k1_bit(i);
@@ -225,20 +219,13 @@ where
     acc
 }
 
-/// Find the highest set bit across two 4-limb values.
-fn highest_bit_4(a: &[u64; 4], b: &[u64; 4]) -> usize {
-    fn bit_length(v: &[u64; 4]) -> usize {
-        for i in (0..4).rev() {
-            if v[i] != 0 {
-                return (i + 1) * 64 - v[i].leading_zeros() as usize;
-            }
-        }
-        0
-    }
-    let a_bits = bit_length(a);
-    let b_bits = bit_length(b);
-    if a_bits > b_bits { a_bits } else { b_bits }
-}
+/// Maximum number of bits in the decomposed half-size scalars.
+/// The GLV decomposition produces |k₁|, |k₂| < ~2^129, and after
+/// negation to ensure positivity, the values are < n/2 < 2^254.
+/// However, we only need to iterate over 129 bits since the
+/// decomposed scalars are bounded by the lattice vector norms (~2^128).
+/// We use 130 to be safe (matching secp256k1's constant-time approach).
+const GLV_SCALAR_BITS: usize = 130;
 
 #[cfg(test)]
 mod tests {
