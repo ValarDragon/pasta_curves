@@ -1,3 +1,29 @@
+/// Dispatch scalar multiplication: use GLV if params are provided, otherwise double-and-add.
+macro_rules! impl_scalar_mul_dispatch {
+    // GLV variant: use the endomorphism-based fast multiplication
+    ($name:ident, $base:ident, $scalar:ident, glv($glv_params:expr)) => {
+        fn scalar_mul(point: &Self, scalar: &$scalar) -> Self {
+            use ff::PrimeField;
+            fn endo_fn(p: &$name) -> $name {
+                $name {
+                    x: p.x * <$base as ff::WithSmallOrderMulGroup<3>>::ZETA,
+                    y: p.y,
+                    z: p.z,
+                }
+            }
+            let repr = scalar.to_repr();
+            let repr_bytes: &[u8; 32] = repr.as_ref().try_into().unwrap();
+            crate::glv::glv_mul(point, repr_bytes, &$glv_params, endo_fn)
+        }
+    };
+    // Default variant: simple double-and-add
+    ($name:ident, $base:ident, $scalar:ident) => {
+        fn scalar_mul(point: &Self, scalar: &$scalar) -> Self {
+            Self::double_and_add(point, scalar)
+        }
+    };
+}
+
 macro_rules! impl_add_binop_specify_output {
     ($lhs:ident, $rhs:ident, $output:ident) => {
         impl<'b> ::core::ops::Add<&'b $rhs> for $lhs {
